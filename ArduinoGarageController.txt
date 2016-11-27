@@ -1,0 +1,173 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <JsonParser.h>
+
+#define TRIGGER 0   //to sensor trigger
+#define ECHO    3    //RX input pull up
+
+//on Raspberry Pi,as root must run /home/pi/startTopic.sh first, then sh /home/pi/analyse.sh 
+//check crontab -l.... also enable email by enable /etc/ssmtp/ssmtp.conf mailhub..
+const char* ssid = "youraccesspoint";//type your ssid
+const char* password = "wifipasswd";//type your password
+const char* mqtt_server = "192.168.1.15";  // MQTT broker server which is on the PI
+
+int GPIO2 = 2; // GPIO2 of ESP8266
+int toDoor = 20; // Maximum range needed
+int toCeiling = 50; // Minimum range needed
+int doorStatus = 5; // 0 means open, 1 means close, other not sure
+int duration, distance; // Duration used to calculate distance
+char DISTANCE[7],msg_buff[100],msg_buff2[100],msg_buff3[100],msg_buff1[100];
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+void json_parser(char json[]){
+  JsonParser<16> parser;
+  JsonHashTable root = parser.parseHashTable(json);
+  if (!root.success()){
+        Serial.println("JsonParser.parseHashTable() failed");
+        return;
+  }
+  
+  String datetime = root.getString("dt");
+  String action = root.getString("msg");
+  Serial.println("datetime: " + datetime);
+  Serial.println("action: ");
+  Serial.println(action);
+
+   //ultra sound card part:
+  digitalWrite(TRIGGER, LOW);  
+  delayMicroseconds(2); 
+  
+  digitalWrite(TRIGGER, HIGH);
+  delayMicroseconds(10); 
+  
+  digitalWrite(TRIGGER, LOW);
+  duration = pulseIn(ECHO, HIGH);
+  distance = duration / 58.2;
+  
+  Serial.print(distance);
+  Serial.println("Centimeter:");
+
+  String strStatus;  
+  if ( distance > toDoor && distance < toCeiling ) strStatus=" DOOR CLOSED";
+  else if ( distance < toDoor && distance > 0 )    strStatus=" DOOR OPEN";
+  else                                             strStatus=" OUT OF RANGE";    
+  
+  dtostrf(distance, 7, 0, DISTANCE);
+
+  String str = "DISTANCE" + String(DISTANCE) + " " + "datetime" + " "+ datetime + strStatus;
+     //client.publish("ledStatusOut",DISTANCE);
+  str.toCharArray(msg_buff1,str.length()+1);
+    
+  if (action.equals("zhimakaimen!") && strStatus == " DOOR CLOSED")
+  // trigger opener
+   {
+    String str =  "datetime " + datetime + " " + action;
+     //client.publish("ledStatusOut",DISTANCE);
+    str.toCharArray(msg_buff2,str.length()+1);
+    client.publish("ledStatusOut",msg_buff2);
+   digitalWrite(GPIO2, LOW);
+   delay(500);
+   digitalWrite(GPIO2, HIGH);}
+ 
+   else if (action.equals("zhimaguanmen!") && strStatus == " DOOR OPEN")
+  // trigger opener
+  {
+     String str =  "datetime " + datetime + " " + action;
+    
+     //client.publish("ledStatusOut",DISTANCE);
+    str.toCharArray(msg_buff3,str.length()+1);
+    client.publish("ledStatusOut",msg_buff3);
+    
+   digitalWrite(GPIO2, LOW);
+   delay(500);
+   digitalWrite(GPIO2, HIGH);}
+   
+  else
+  {client.publish("ledStatusOut",msg_buff1); }
+
+  Serial.println();
+}
+
+  
+void callback(char* topic, byte* payload, unsigned int length) {
+ Serial.print("Message arrived [");
+ Serial.print(topic);
+ Serial.print("] ");
+ Serial.print("length:");
+ Serial.print(length);
+ int i = 0;
+ int j = 0;
+ boolean saveString = false;
+ for(i=0; i<length; i++) {
+    if(payload[i] == '{'  || saveString == true){
+//    if(payload[i] == '{' && i > 0 || saveString == true){
+      saveString = true;
+      msg_buff[j] = payload[i];
+//      Serial.print("msgbuffj");
+//      Serial.print(msg_buff[j]);
+//      Serial.print("payloadi");
+//      Serial.print(payload[i]);
+      if(payload[i] == '}'){
+        saveString = false;
+      }
+      j++;
+    }
+  }
+
+  
+  msg_buff[j] = '\0'; 
+
+  
+  String msgString = String(msg_buff);
+  Serial.print(msgString);
+  json_parser(msg_buff);
+
+}
+
+
+
+void reconnect() {
+ // Loop until we're reconnected
+ while (!client.connected()) {
+ Serial.print("Attempting MQTT connection...");
+ // Attempt to connect
+ if (client.connect("ESP8266 Client")) {
+  Serial.println("connected");
+  // ... and subscribe to topic
+  client.subscribe("ledStatus");
+  client.publish("ledStatusOut","connected and subscribed to ledStatus topic.");
+  
+ } else {
+  Serial.print("failed, rc=");
+  Serial.print(client.state());
+  Serial.println(" try again in 5 seconds");
+  // Wait 5 seconds before retrying
+  delay(5000);
+  }
+ }
+}
+ 
+void setup()
+{
+ Serial.begin(115200,SERIAL_8N1,SERIAL_TX_ONLY);
+ 
+    client.setServer(mqtt_server, 1888);
+    
+    pinMode(GPIO2, OUTPUT);
+    digitalWrite(GPIO2, HIGH);
+    pinMode(TRIGGER, OUTPUT);
+    pinMode(ECHO, INPUT_PULLUP);
+    client.setCallback(callback);
+ }
+ 
+void loop()
+{
+ if (!client.connected()) {
+  reconnect();
+ }
+
+  delay(5000);
+ client.loop();
+}
+
